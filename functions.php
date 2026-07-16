@@ -1,0 +1,91 @@
+<?php
+
+add_action('rest_api_init', function () {
+    remove_filter('rest_pre_serve_request', 'rest_send_cors_headers');
+    add_filter('rest_pre_serve_request', function ($value) {
+        header('Access-Control-Allow-Origin: *'); // For staging; replace '*' with your specific React URL in production
+        header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
+        header('Access-Control-Allow-Headers: Origin, Content-Type, Authorization');
+        return $value;
+    });
+}, 15);
+
+/**
+ * Override Contact Form 7 REST API pattern to support alphanumeric IDs
+ */
+add_action('rest_api_init', function () {
+    // Re-register the feedback route path to accept characters and words (\w+) instead of only digits (\d+)
+    register_rest_route('contact-form-7/v1', '/contact-forms/(?P<id>[a-zA-w0-9]+)/feedback', array(
+        'methods' => 'POST',
+        'callback' => function($request) {
+            // Forward processing directly to the native plugin handler instance
+            if (class_exists('WPCF7_RESTRoutes')) {
+                return wpcf7_rest_service_feedback($request);
+            }
+            return new WP_Error('plugin_missing', 'Contact Form 7 controller missing', array('status' => 500));
+        },
+        'permission_callback' => '__return_true'
+    ));
+}, 10);
+
+
+/**
+ * Register a custom Headless API Endpoint for Markencia Payments
+ */
+add_action('rest_api_init', function () {
+    register_rest_route('markencia/v1', '/create-checkout', array(
+        'methods'             => 'POST',
+        'callback'            => 'handle_markencia_stripe_checkout',
+        'permission_callback' => '__return_true', // Open to public checkout requests
+    ));
+});
+
+function handle_markencia_stripe_checkout($request) {
+    // 1. Get the payload sent from the React app
+    $params   = $request->get_json_params();
+    $price_id = sanitize_text_field($params['priceId']);
+
+    if (empty($price_id)) {
+        return new WP_Error('missing_data', 'Stripe Price ID is required.', array('status' => 400));
+    }
+
+    // 2. Set your Stripe API configuration values
+    $stripe_secret_key = 'sk_test_YOUR_STRIPE_SECRET_KEY_HERE'; // ⚠️ REPLACE THIS WITH YOUR STRIPE SECRET KEY
+    $stripe_api_url    = 'https://api.stripe.com/v1/checkout/sessions';
+
+    // 3. Prepare the checkout transaction details
+    $checkout_data = array(
+        'payment_method_types' => array('card'),
+        'line_items' => array(
+            array(
+                'price'    => $price_id,
+                'quantity' => 1,
+            )
+        ),
+        'mode'        => 'subscription', // Because these are monthly recurring plans
+        'success_url' => 'http://localhost:5173/?session_id={CHECKOUT_SESSION_ID}',
+        'cancel_url'  => 'http://localhost:5173',
+    );
+
+    // 4. Fire the secure server-to-server API request directly to Stripe
+    $response = wp_remote_post($stripe_api_url, array(
+        'headers' => array(
+            'Authorization' => 'Bearer ' . $stripe_secret_key,
+            'Content-Type'  => 'application/x-www-form-urlencoded',
+        ),
+        'body' => http_build_query($checkout_data),
+    ));
+
+    // 5. Handle unexpected server or network drops gracefully
+    if (is_wp_error($response)) {
+        return new WP_Error('stripe_fail', 'Could not establish connection with Stripe.', array('status' => 500));
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    // 6. Send the generated secure checkout URL back to your React app
+    return array(
+        'checkoutUrl' => isset($body['url']) ? $body['url'] : ''
+    );
+}
+
