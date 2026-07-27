@@ -1,5 +1,8 @@
 <?php
 
+// add theme support
+add_theme_support( 'post-thumbnails' );
+
 add_action('rest_api_init', function () {
     remove_filter('rest_pre_serve_request', 'rest_send_cors_headers');
     add_filter('rest_pre_serve_request', function ($value) {
@@ -88,4 +91,33 @@ function handle_markencia_stripe_checkout($request) {
         'checkoutUrl' => isset($body['url']) ? $body['url'] : ''
     );
 }
+
+/**
+ * ============================================================================
+ * 1. Register 'FAQ' Custom Post Type for Headless React App
+ * ============================================================================
+ */
+add_action('init', function() {
+    register_post_type('faq', array(
+        'labels' => array(
+            'name'          => 'FAQs',
+            'singular_name' => 'FAQ',
+            'add_new_item'  => 'Add New FAQ',
+            'edit_item'     => 'Edit FAQ',
+            'menu_name'     => 'FAQs',
+        ),
+        'public'       => true,
+        'has_archive'  => false,
+        'menu_icon'    => 'dashicons-editor-help', // WordPress help/question icon
+        'supports'     => array('title'), // The title box will be the FAQ QUESTION
+        
+        // ⚠️ CRITICAL FOR HEADLESS: Enables REST API at /wp-json/wp/v2/faqs
+        'show_in_rest' => true,
+        'rest_base'    => 'faqs',
+    ));
+});
+
+
+
+
 
