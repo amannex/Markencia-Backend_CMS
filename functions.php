@@ -139,6 +139,14 @@ add_action('rest_api_init', function () {
         'schema' => null,
     ));
 
+    // Expose Github handle
+    register_rest_field('user', 'github', array(
+        'get_callback' => function ($user) {
+            return get_user_meta($user['id'], 'github', true) ?: '';
+        },
+        'schema' => null,
+    ));
+
     // Expose Website / URL
     register_rest_field('user', 'website', array(
         'get_callback' => function ($user) {
@@ -157,6 +165,37 @@ add_filter('rest_allow_anonymous_comments', '__return_true');
 
 
 
+// 1. Add LinkedIn and Twitter fields to WordPress User Profile settings
+function markencia_add_user_social_fields($methods) {
+    $methods['linkedin'] = 'LinkedIn Profile URL';
+    $methods['twitter']  = 'Twitter / X Profile URL';
+    $methods['github']  = 'GitHub Profile URL';
+    return $methods;
+}
+add_filter('user_contactmethods', 'markencia_add_user_social_fields');
+
+// 2. Expose LinkedIn and Twitter fields in the WordPress REST API (_embedded.author)
+function markencia_register_user_rest_social() {
+    register_rest_field('user', 'linkedin', [
+        'get_callback' => function($user) {
+            return get_user_meta($user['id'], 'linkedin', true);
+        },
+        'schema' => null,
+    ]);
+    register_rest_field('user', 'twitter', [
+        'get_callback' => function($user) {
+            return get_user_meta($user['id'], 'twitter', true);
+        },
+        'schema' => null,
+    ]);
+    register_rest_field('user', 'github', [
+        'get_callback' => function($user) {
+            return get_user_meta($user['id'], 'github', true);
+        },
+        'schema' => null,
+    ]);
+}
+add_action('rest_api_init', 'markencia_register_user_rest_social');
 
 
 
