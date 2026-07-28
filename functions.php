@@ -117,6 +117,45 @@ add_action('init', function() {
     ));
 });
 
+/**
+ * ============================================================================
+ * 2. Expose Author Social Links in REST API ('user' endpoint & embedded author)
+ * ============================================================================
+ */
+add_action('rest_api_init', function () {
+    // Expose LinkedIn URL
+    register_rest_field('user', 'linkedin', array(
+        'get_callback' => function ($user) {
+            return get_user_meta($user['id'], 'linkedin', true) ?: '';
+        },
+        'schema' => null,
+    ));
+
+    // Expose Twitter / X handle
+    register_rest_field('user', 'twitter', array(
+        'get_callback' => function ($user) {
+            return get_user_meta($user['id'], 'twitter', true) ?: '';
+        },
+        'schema' => null,
+    ));
+
+    // Expose Website / URL
+    register_rest_field('user', 'website', array(
+        'get_callback' => function ($user) {
+            return get_the_author_meta('user_url', $user['id']) ?: '';
+        },
+        'schema' => null,
+    ));
+});
+
+/**
+ * ============================================================================
+ * 3. Allow Anonymous / Guest Comment Submissions via Headless REST API
+ * ============================================================================
+ */
+add_filter('rest_allow_anonymous_comments', '__return_true');
+
+
 
 
 
