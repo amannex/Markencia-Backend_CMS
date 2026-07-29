@@ -197,5 +197,21 @@ function markencia_register_user_rest_social() {
 }
 add_action('rest_api_init', 'markencia_register_user_rest_social');
 
-
-
+// ============================================================
+// Add "featured" boolean flag to WordPress REST API Posts
+// ============================================================
+add_action('rest_api_init', function () {
+    register_rest_field('post', 'featured', [
+        'get_callback' => function ($post_arr) {
+            // Check if the post is Sticky in WordPress OR has a custom meta 'featured'
+            $is_sticky       = is_sticky($post_arr['id']);
+            $custom_featured = get_post_meta($post_arr['id'], 'featured', true);
+            
+            return $is_sticky || !empty($custom_featured);
+        },
+        'schema' => [
+            'description' => 'Whether the post should appear as the hero featured card.',
+            'type'        => 'boolean',
+        ],
+    ]);
+});
