@@ -1,176 +1,385 @@
 <?php
+/**
+ * Markencia Custom Theme functions and definitions
+ */
 
-// add theme support
-add_theme_support( 'post-thumbnails' );
+// Enable support for Menus, Title Tags, and Custom Logo
+add_theme_support('menus');
+add_theme_support('title-tag'); // Essential for SEO (allows WordPress to generate <title>)
+add_theme_support('custom-logo'); // Allows you to change the logo in Appearance > Customize
 
-add_action('rest_api_init', function () {
-    remove_filter('rest_pre_serve_request', 'rest_send_cors_headers');
-    add_filter('rest_pre_serve_request', function ($value) {
-        header('Access-Control-Allow-Origin: *'); // For staging; replace '*' with your specific React URL in production
-        header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-        header('Access-Control-Allow-Headers: Origin, Content-Type, Authorization');
-        return $value;
-    });
-}, 15);
+// Register Menus
+register_nav_menus(array(
+    'primary_menu' => __('Main Menu', 'markencia'),
+    'primary_menu_mobile'=> __('Mobile Menu','markencia'),
+));
 
 /**
- * Override Contact Form 7 REST API pattern to support alphanumeric IDs
+ * Enqueue scripts and styles.
  */
-add_action('rest_api_init', function () {
-    // Re-register the feedback route path to accept characters and words (\w+) instead of only digits (\d+)
-    register_rest_route('contact-form-7/v1', '/contact-forms/(?P<id>[a-zA-w0-9]+)/feedback', array(
-        'methods' => 'POST',
-        'callback' => function($request) {
-            // Forward processing directly to the native plugin handler instance
-            if (class_exists('WPCF7_RESTRoutes')) {
-                return wpcf7_rest_service_feedback($request);
-            }
-            return new WP_Error('plugin_missing', 'Contact Form 7 controller missing', array('status' => 500));
-        },
-        'permission_callback' => '__return_true'
-    ));
-}, 10);
+function markencia_assets()
+{
+    // Enqueue styles to the theme with dynamic versioning for cache-busting
+    wp_register_style(
+        'markencia-style', 
+        get_theme_file_uri('css/styles.css'), 
+        [], 
+        filemtime(get_theme_file_path('css/styles.css')), // <--- Auto-updates version on save
+        'all'
+    );
+    wp_enqueue_style('markencia-style');
 
+    // Enqueue scripts
+    wp_enqueue_script(
+        'markencia-script', 
+        get_theme_file_uri('js/scripts.js'), 
+        [], 
+        filemtime(get_theme_file_path('js/scripts.js')), 
+        true // true loads the script in the footer
+    );
+}
+add_action('wp_enqueue_scripts', 'markencia_assets');
+
+// ============================================================
+// HEADLESS WORDPRESS — REST API Extensions
+// Added for the React + Vite headless frontend
+// ============================================================
 
 /**
- * Register a custom Headless API Endpoint for Markencia Payments
+ * Add CORS headers to allow the React frontend (localhost:5173) to
+ * communicate with the WordPress REST API during development.
+ * Update the allowed origin when deploying to production.
  */
-add_action('rest_api_init', function () {
-    register_rest_route('markencia/v1', '/create-checkout', array(
-        'methods'             => 'POST',
-        'callback'            => 'handle_markencia_stripe_checkout',
-        'permission_callback' => '__return_true', // Open to public checkout requests
-    ));
-});
-
-function handle_markencia_stripe_checkout($request) {
-    // 1. Get the payload sent from the React app
-    $params   = $request->get_json_params();
-    $price_id = sanitize_text_field($params['priceId']);
-
-    if (empty($price_id)) {
-        return new WP_Error('missing_data', 'Stripe Price ID is required.', array('status' => 400));
-    }
-
-    // 2. Set your Stripe API configuration values
-    $stripe_secret_key = 'sk_test_YOUR_STRIPE_SECRET_KEY_HERE'; // ⚠️ REPLACE THIS WITH YOUR STRIPE SECRET KEY
-    $stripe_api_url    = 'https://api.stripe.com/v1/checkout/sessions';
-
-    // 3. Prepare the checkout transaction details
-    $checkout_data = array(
-        'payment_method_types' => array('card'),
-        'line_items' => array(
-            array(
-                'price'    => $price_id,
-                'quantity' => 1,
-            )
-        ),
-        'mode'        => 'subscription', // Because these are monthly recurring plans
-        'success_url' => 'http://localhost:5173/?session_id={CHECKOUT_SESSION_ID}',
-        'cancel_url'  => 'http://localhost:5173',
+add_action('init', function () {
+    $allowed_origins = array(
+        'http://localhost:3000',  // Next.js dev
+        'http://localhost:3001',  // Next.js fallback port
+        'http://127.0.0.1:3000',
+        'http://localhost:5173',  // Vite dev (kept for compatibility)
+        'http://127.0.0.1:5173',
     );
 
-    // 4. Fire the secure server-to-server API request directly to Stripe
-    $response = wp_remote_post($stripe_api_url, array(
-        'headers' => array(
-            'Authorization' => 'Bearer ' . $stripe_secret_key,
-            'Content-Type'  => 'application/x-www-form-urlencoded',
+    $origin = isset($_SERVER['HTTP_ORIGIN']) ? $_SERVER['HTTP_ORIGIN'] : '';
+
+    if (in_array($origin, $allowed_origins, true)) {
+        header("Access-Control-Allow-Origin: {$origin}");
+        header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+        header('Access-Control-Allow-Headers: Authorization, Content-Type, X-WP-Nonce');
+        header('Access-Control-Allow-Credentials: true');
+    }
+
+    if ('OPTIONS' === $_SERVER['REQUEST_METHOD']) {
+        status_header(200);
+        exit();
+    }
+});
+
+/**
+ * Register custom REST API routes for the headless frontend.
+ * Namespace: markencia/v1
+ */
+add_action('rest_api_init', function () {
+    // Contact form endpoint
+    register_rest_route('markencia/v1', '/contact', array(
+        'methods'             => 'POST',
+        'callback'            => 'markencia_handle_contact_form',
+        'permission_callback' => '__return_true',
+        'args'                => array(
+            'firstName' => array('required' => true, 'sanitize_callback' => 'sanitize_text_field'),
+            'lastName'  => array('required' => true, 'sanitize_callback' => 'sanitize_text_field'),
+            'email'     => array('required' => true, 'sanitize_callback' => 'sanitize_email'),
+            'message'   => array('required' => true, 'sanitize_callback' => 'sanitize_textarea_field'),
         ),
-        'body' => http_build_query($checkout_data),
     ));
 
-    // 5. Handle unexpected server or network drops gracefully
+    // Newsletter subscription endpoint
+    register_rest_route('markencia/v1', '/newsletter', array(
+        'methods'             => 'POST',
+        'callback'            => 'markencia_handle_newsletter',
+        'permission_callback' => '__return_true',
+        'args'                => array(
+            'email' => array('required' => true, 'sanitize_callback' => 'sanitize_email'),
+        ),
+    ));
+
+    // ── Razorpay: Create Order ────────────────────────────────────────────────
+    // Called by the React frontend when the user clicks a pricing plan button.
+    // Returns a Razorpay order_id that the frontend uses to open the checkout modal.
+    register_rest_route('markencia/v1', '/create-razorpay-order', array(
+        'methods'             => 'POST',
+        'callback'            => 'markencia_create_razorpay_order',
+        'permission_callback' => '__return_true',
+        'args'                => array(
+            'amount'   => array('required' => true,  'validate_callback' => function($v) { return is_numeric($v); }),
+            'currency' => array('required' => false, 'sanitize_callback' => 'sanitize_text_field', 'default' => 'INR'),
+            'planName' => array('required' => true,  'sanitize_callback' => 'sanitize_text_field'),
+        ),
+    ));
+
+    // ── Razorpay: Confirm Payment + Send Email ────────────────────────────────
+    // Called by React after Razorpay modal closes with a successful payment.
+    // Verifies the signature, then sends confirmation + admin notification emails.
+    register_rest_route('markencia/v1', '/confirm-payment', array(
+        'methods'             => 'POST',
+        'callback'            => 'markencia_confirm_razorpay_payment',
+        'permission_callback' => '__return_true',
+        'args'                => array(
+            'razorpay_payment_id' => array('required' => true,  'sanitize_callback' => 'sanitize_text_field'),
+            'razorpay_order_id'   => array('required' => true,  'sanitize_callback' => 'sanitize_text_field'),
+            'razorpay_signature'  => array('required' => true,  'sanitize_callback' => 'sanitize_text_field'),
+            'planName'            => array('required' => true,  'sanitize_callback' => 'sanitize_text_field'),
+            'customerEmail'       => array('required' => false, 'sanitize_callback' => 'sanitize_email'),
+            'customerName'        => array('required' => false, 'sanitize_callback' => 'sanitize_text_field'),
+        ),
+    ));
+    // ─────────────────────────────────────────────────────────────────────────
+});
+
+/**
+ * Handle contact form submission — sends email to admin.
+ */
+function markencia_handle_contact_form(WP_REST_Request $request) {
+    $first_name = $request->get_param('firstName');
+    $last_name  = $request->get_param('lastName');
+    $email      = $request->get_param('email');
+    $company    = $request->get_param('company') ?: 'Not specified';
+    $interest   = $request->get_param('interest') ?: 'General Inquiry';
+    $message    = $request->get_param('message');
+
+    $to      = get_option('admin_email');
+    $subject = "New Contact Form Submission from {$first_name} {$last_name}";
+    $body    = "Name: {$first_name} {$last_name}\n";
+    $body   .= "Email: {$email}\n";
+    $body   .= "Company: {$company}\n";
+    $body   .= "Interest: {$interest}\n\n";
+    $body   .= "Message:\n{$message}";
+    $headers = array('Content-Type: text/plain; charset=UTF-8');
+
+    $sent = wp_mail($to, $subject, $body, $headers);
+
+    if ($sent) {
+        return rest_ensure_response(array('success' => true, 'message' => 'Thank you! We\'ll be in touch within 24 hours.'));
+    }
+
+    return new WP_Error('mail_failed', 'Could not send the message. Please try again.', array('status' => 500));
+}
+
+/**
+ * Handle newsletter subscription.
+ */
+function markencia_handle_newsletter(WP_REST_Request $request) {
+    $email = $request->get_param('email');
+    // TODO: Integrate with your email marketing platform (Mailchimp, etc.)
+    // For now, we log the subscription to the database.
+    $subscribers = get_option('markencia_newsletter_subscribers', array());
+    if (!in_array($email, $subscribers, true)) {
+        $subscribers[] = $email;
+        update_option('markencia_newsletter_subscribers', $subscribers);
+    }
+    return rest_ensure_response(array('success' => true, 'message' => 'You\'re subscribed!'));
+}
+
+// ============================================================
+// RAZORPAY PAYMENT INTEGRATION
+// Keys are stored securely in wp-config.php — never here.
+// ============================================================
+
+/**
+ * Create a Razorpay order via their Orders API.
+ *
+ * POST /wp-json/markencia/v1/create-razorpay-order
+ * Body: { amount: 25000, currency: "INR", planName: "Starter" }
+ *
+ * Razorpay expects amount in paise (1 INR = 100 paise).
+ * The React frontend sends the amount already in paise.
+ *
+ * Returns: { orderId, amount, currency, keyId }
+ */
+function markencia_create_razorpay_order(WP_REST_Request $request) {
+    $amount   = (int) $request->get_param('amount');   // in paise e.g. 2500000 = ₹25,000
+    $currency = $request->get_param('currency') ?: 'INR';
+    $planName = $request->get_param('planName');
+
+    $key_id     = defined('RAZORPAY_KEY_ID')     ? RAZORPAY_KEY_ID     : '';
+    $key_secret = defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : '';
+
+    if (empty($key_id) || empty($key_secret)) {
+        return new WP_Error('razorpay_config', 'Razorpay keys are not configured.', array('status' => 500));
+    }
+
+    // Build a unique receipt ID for this order
+    $receipt = 'mkn_' . sanitize_title($planName) . '_' . time();
+
+    // Call the Razorpay Orders API using WordPress HTTP API (no SDK needed)
+    $response = wp_remote_post('https://api.razorpay.com/v1/orders', array(
+        'headers' => array(
+            'Authorization' => 'Basic ' . base64_encode("{$key_id}:{$key_secret}"),
+            'Content-Type'  => 'application/json',
+        ),
+        'body'    => wp_json_encode(array(
+            'amount'          => $amount,
+            'currency'        => $currency,
+            'receipt'         => $receipt,
+            'payment_capture' => 1, // auto-capture on success
+        )),
+        'timeout' => 15,
+    ));
+
+    // Handle HTTP-level errors
     if (is_wp_error($response)) {
-        return new WP_Error('stripe_fail', 'Could not establish connection with Stripe.', array('status' => 500));
+        return new WP_Error('razorpay_request_failed', $response->get_error_message(), array('status' => 502));
     }
 
     $body = json_decode(wp_remote_retrieve_body($response), true);
+    $code = wp_remote_retrieve_response_code($response);
 
-    // 6. Send the generated secure checkout URL back to your React app
-    return array(
-        'checkoutUrl' => isset($body['url']) ? $body['url'] : ''
+    // Handle Razorpay API-level errors
+    if ($code !== 200 || empty($body['id'])) {
+        $err_msg = isset($body['error']['description']) ? $body['error']['description'] : 'Unknown Razorpay error';
+        return new WP_Error('razorpay_api_error', $err_msg, array('status' => $code));
+    }
+
+    // Return the order details to the React frontend
+    return rest_ensure_response(array(
+        'success'  => true,
+        'orderId'  => $body['id'],
+        'amount'   => $body['amount'],
+        'currency' => $body['currency'],
+        'keyId'    => $key_id, // safe to send — this is the publishable key
+    ));
+}
+
+// ============================================================
+// RAZORPAY: CONFIRM PAYMENT + SEND EMAILS
+// ============================================================
+
+/**
+ * Verify a completed Razorpay payment and dispatch confirmation emails.
+ *
+ * POST /wp-json/markencia/v1/confirm-payment
+ * Body: {
+ *   razorpay_payment_id, razorpay_order_id, razorpay_signature,
+ *   planName, customerEmail (optional), customerName (optional)
+ * }
+ *
+ * Security: Uses HMAC-SHA256 signature verification — if the signature
+ * doesn't match, the payment is rejected as tampered/fraudulent.
+ */
+function markencia_confirm_razorpay_payment(WP_REST_Request $request) {
+    $payment_id    = $request->get_param('razorpay_payment_id');
+    $order_id      = $request->get_param('razorpay_order_id');
+    $signature     = $request->get_param('razorpay_signature');
+    $plan_name     = $request->get_param('planName');
+    $customer_email = $request->get_param('customerEmail') ?: '';
+    $customer_name  = $request->get_param('customerName')  ?: 'Valued Customer';
+
+    $key_secret = defined('RAZORPAY_KEY_SECRET') ? RAZORPAY_KEY_SECRET : '';
+
+    if (empty($key_secret)) {
+        return new WP_Error('razorpay_config', 'Payment gateway is not configured.', array('status' => 500));
+    }
+
+    // ── Step 1: Verify the payment signature ─────────────────────────────────
+    // Razorpay signs: SHA256( order_id + "|" + payment_id ) with the key secret.
+    // If this doesn't match, someone tampered with the request — reject it.
+    $generated_signature = hash_hmac(
+        'sha256',
+        $order_id . '|' . $payment_id,
+        $key_secret
     );
+
+    if (!hash_equals($generated_signature, $signature)) {
+        return new WP_Error(
+            'invalid_signature',
+            'Payment signature verification failed. This request may be fraudulent.',
+            array('status' => 400)
+        );
+    }
+
+    // ── Step 2: Map plan name to its display price ────────────────────────────
+    $plan_prices = array(
+        'Starter'    => '₹25,000/month',
+        'Growth'     => '₹60,000/month',
+        'Enterprise' => 'Custom Pricing',
+    );
+    $plan_price = isset($plan_prices[$plan_name]) ? $plan_prices[$plan_name] : 'Custom';
+
+    $admin_email = get_option('admin_email');
+    $site_name   = get_bloginfo('name');
+    $headers     = array('Content-Type: text/html; charset=UTF-8');
+
+    // ── Step 3a: Customer confirmation email ─────────────────────────────────
+    if (!empty($customer_email)) {
+        $customer_subject = "🎉 Payment Confirmed — Welcome to Markencia {$plan_name} Plan!";
+        $customer_body = "
+        <html><body style='font-family: Arial, sans-serif; color: #1a1a2e; line-height: 1.6;'>
+            <div style='max-width:600px; margin:0 auto; padding:30px;'>
+                <h2 style='color:#7C3AED;'>Welcome to Markencia! 🚀</h2>
+                <p>Hi <strong>{$customer_name}</strong>,</p>
+                <p>Your payment has been successfully received. Here's a summary:</p>
+                <table style='width:100%; border-collapse:collapse; margin:20px 0;'>
+                    <tr style='background:#f5f0ff;'>
+                        <td style='padding:10px; font-weight:bold;'>Plan</td>
+                        <td style='padding:10px;'>{$plan_name}</td>
+                    </tr>
+                    <tr>
+                        <td style='padding:10px; font-weight:bold;'>Price</td>
+                        <td style='padding:10px;'>{$plan_price}</td>
+                    </tr>
+                    <tr style='background:#f5f0ff;'>
+                        <td style='padding:10px; font-weight:bold;'>Payment ID</td>
+                        <td style='padding:10px;'><code>{$payment_id}</code></td>
+                    </tr>
+                    <tr>
+                        <td style='padding:10px; font-weight:bold;'>Order ID</td>
+                        <td style='padding:10px;'><code>{$order_id}</code></td>
+                    </tr>
+                </table>
+                <p>Our team will reach out within <strong>24 hours</strong> to onboard you and get started.</p>
+                <p>In the meantime, feel free to reach us at <a href='mailto:{$admin_email}'>{$admin_email}</a>.</p>
+                <hr style='border:1px solid #eee; margin:30px 0;'>
+                <p style='color:#888; font-size:12px;'>
+                    This is an automated confirmation from {$site_name}.<br>
+                    Please keep your Payment ID for your records.
+                </p>
+            </div>
+        </body></html>";
+
+        wp_mail($customer_email, $customer_subject, $customer_body, $headers);
+    }
+
+    // ── Step 3b: Admin sale notification email ────────────────────────────────
+    $admin_subject = "💰 New Payment Received — {$plan_name} Plan";
+    $admin_body = "
+    <html><body style='font-family: Arial, sans-serif; color: #1a1a2e;'>
+        <div style='max-width:600px; margin:0 auto; padding:30px;'>
+            <h2 style='color:#7C3AED;'>New Sale Alert! 🎉</h2>
+            <table style='width:100%; border-collapse:collapse;'>
+                <tr style='background:#f5f0ff;'>
+                    <td style='padding:10px; font-weight:bold;'>Customer</td>
+                    <td style='padding:10px;'>{$customer_name}" . (!empty($customer_email) ? " &lt;{$customer_email}&gt;" : '') . "</td>
+                </tr>
+                <tr>
+                    <td style='padding:10px; font-weight:bold;'>Plan Purchased</td>
+                    <td style='padding:10px;'>{$plan_name} — {$plan_price}</td>
+                </tr>
+                <tr style='background:#f5f0ff;'>
+                    <td style='padding:10px; font-weight:bold;'>Payment ID</td>
+                    <td style='padding:10px;'>{$payment_id}</td>
+                </tr>
+                <tr>
+                    <td style='padding:10px; font-weight:bold;'>Order ID</td>
+                    <td style='padding:10px;'>{$order_id}</td>
+                </tr>
+            </table>
+            <p><a href='https://dashboard.razorpay.com/app/payments/{$payment_id}' style='background:#7C3AED; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;'>View in Razorpay Dashboard →</a></p>
+        </div>
+    </body></html>";
+
+    wp_mail($admin_email, $admin_subject, $admin_body, $headers);
+
+    return rest_ensure_response(array(
+        'success' => true,
+        'message' => 'Payment verified and confirmation email sent.',
+    ));
 }
-
-/**
- * ============================================================================
- * 1. Register 'FAQ' Custom Post Type for Headless React App
- * ============================================================================
- */
-add_action('init', function() {
-    register_post_type('faq', array(
-        'labels' => array(
-            'name'          => 'FAQs',
-            'singular_name' => 'FAQ',
-            'add_new_item'  => 'Add New FAQ',
-            'edit_item'     => 'Edit FAQ',
-            'menu_name'     => 'FAQs',
-        ),
-        'public'       => true,
-        'has_archive'  => false,
-        'menu_icon'    => 'dashicons-editor-help', // WordPress help/question icon
-        'supports'     => array('title'), // The title box will be the FAQ QUESTION
-        
-        // ⚠️ CRITICAL FOR HEADLESS: Enables REST API at /wp-json/wp/v2/faqs
-        'show_in_rest' => true,
-        'rest_base'    => 'faqs',
-    ));
-});
-
-/**
- * ============================================================================
- * 2. Expose Author Social Links in REST API ('user' endpoint & embedded author)
- * ============================================================================
- */
-add_action('rest_api_init', function () {
-    // Expose LinkedIn URL
-    register_rest_field('user', 'linkedin', array(
-        'get_callback' => function ($user) {
-            return get_user_meta($user['id'], 'linkedin', true) ?: '';
-        },
-        'schema' => null,
-    ));
-
-    // Expose Twitter / X handle
-    register_rest_field('user', 'twitter', array(
-        'get_callback' => function ($user) {
-            return get_user_meta($user['id'], 'twitter', true) ?: '';
-        },
-        'schema' => null,
-    ));
-
-    // Expose Github handle
-    register_rest_field('user', 'github', array(
-        'get_callback' => function ($user) {
-            return get_user_meta($user['id'], 'github', true) ?: '';
-        },
-        'schema' => null,
-    ));
-
-    // Expose Website / URL
-    register_rest_field('user', 'website', array(
-        'get_callback' => function ($user) {
-            return get_the_author_meta('user_url', $user['id']) ?: '';
-        },
-        'schema' => null,
-    ));
-});
-
-/**
- * ============================================================================
- * 3. Allow Anonymous / Guest Comment Submissions via Headless REST API
- * ============================================================================
- */
-add_filter('rest_allow_anonymous_comments', '__return_true');
-
-
-
-// 1. Add LinkedIn and Twitter fields to WordPress User Profile settings
-function markencia_add_user_social_fields($methods) {
-    $methods['linkedin'] = 'LinkedIn Profile URL';
-    $methods['twitter']  = 'Twitter / X Profile URL';
-    $methods['github']  = 'GitHub Profile URL';
-    return $methods;
-}
-add_filter('user_contactmethods', 'markencia_add_user_social_fields');
-
