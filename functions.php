@@ -383,3 +383,42 @@ function markencia_confirm_razorpay_payment(WP_REST_Request $request) {
         'message' => 'Payment verified and confirmation email sent.',
     ));
 }
+
+// ============================================================
+// HEADLESS ROUTING & ADMIN BAR INTEGRATION
+// ============================================================
+
+// 1. Redirect any frontend visitors on cms.markencia.com to the live Next.js website
+add_action('template_redirect', function () {
+    if (
+        !is_admin() &&
+        isset($_SERVER['HTTP_HOST']) &&
+        $_SERVER['HTTP_HOST'] === 'cms.markencia.com'
+    ) {
+        wp_redirect('https://markencia.com', 301);
+        exit;
+    }
+});
+
+// 2. Make the Top Bar "Markencia" Button & "Visit Site" open the live Next.js website in a new tab
+add_action('admin_bar_menu', function ($wp_admin_bar) {
+    $frontend_url = 'https://markencia.com';
+
+    // Update the main site title link
+    $site_name = $wp_admin_bar->get_node('site-name');
+    if ($site_name) {
+        $site_name->href = $frontend_url;
+        $site_name->meta['target'] = '_blank'; // Opens live website in a new tab
+        $wp_admin_bar->add_node($site_name);
+    }
+
+    // Update the "Visit Site" dropdown link
+    $view_site = $wp_admin_bar->get_node('view-site');
+    if ($view_site) {
+        $view_site->href = $frontend_url;
+        $view_site->meta['target'] = '_blank';
+        $wp_admin_bar->add_node($view_site);
+    }
+}, 999);
+
+
